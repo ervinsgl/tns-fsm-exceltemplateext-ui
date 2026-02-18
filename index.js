@@ -2,7 +2,12 @@
  * index.js - Backend Server
  *
  * Express.js server for the FSM Mobile Web Container app.
- * Receives the FSM Mobile POST context, stores it, and serves the UI5 frontend.
+ * Receives the FSM Mobile POST context, stores it per-session,
+ * and serves the UI5 frontend.
+ *
+ * Session fix: each user gets their own context slot keyed by
+ * userName + cloudId. Avoids one user's POST overwriting another's.
+ * Sessions are cleaned up after 1 hour to prevent unbounded growth.
  *
  * @file index.js
  * @requires express
@@ -14,9 +19,34 @@ const path = require('path');
 const app = express();
 
 // ===========================
-// CONTEXT STORAGE
+// SESSION CONTEXT STORAGE
 // ===========================
-let mobileAppContext = undefined;
+
+/**
+ * Map of sessionKey -> { ...fsmContext, _timestamp }
+ * Key format: "<userName>-<cloudId>"
+ * One entry per user+object combination, cleaned up after SESSION_TTL_MS.
+ */
+const sessions = {};
+const SESSION_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+/**
+ * Remove sessions older than SESSION_TTL_MS.
+ * Runs every 10 minutes.
+ */
+setInterval(() => {
+    const cutoff = Date.now() - SESSION_TTL_MS;
+    let removed = 0;
+    Object.keys(sessions).forEach(key => {
+        if (sessions[key]._timestamp < cutoff) {
+            delete sessions[key];
+            removed++;
+        }
+    });
+    if (removed > 0) {
+        console.log(`Session cleanup: removed ${removed} expired session(s). Active: ${Object.keys(sessions).length}`);
+    }
+}, 10 * 60 * 1000);
 
 // ===========================
 // MIDDLEWARE
@@ -35,6 +65,27 @@ app.enable('trust proxy');
 // ===========================
 
 /**
+ * Stores FSM Mobile context in the session map and redirects to the app root.
+ * The session key is passed as a URL query param so the frontend can
+ * retrieve exactly its own context, even if other users open simultaneously.
+ *
+ * @param {Object} body - FSM Mobile POST body
+ * @param {Object} res  - Express response
+ */
+function handleMobilePost(body, res) {
+    const userName = body?.userName || 'unknown';
+    const cloudId  = body?.cloudId  || 'unknown';
+    const key = `${userName}-${cloudId}`;
+
+    sessions[key] = { ...body, _timestamp: Date.now() };
+
+    console.log(`Web container opened | user: ${userName} | objectType: ${body?.objectType} | session: ${key}`);
+
+    const host = res.req.protocol + '://' + res.req.get('host');
+    res.redirect(`${host}/?session=${encodeURIComponent(key)}`);
+}
+
+/**
  * POST /web-container-access-point
  *
  * FSM Mobile sends a POST here when opening the web container.
@@ -45,28 +96,36 @@ app.enable('trust proxy');
  *   objectType, language, dataCloudFullQualifiedDomainName }
  */
 app.post('/web-container-access-point', (req, res) => {
-    console.log('Web container opened | user:', req.body?.userName, '| objectType:', req.body?.objectType);
-    mobileAppContext = req.body || {};
-    res.redirect(req.protocol + '://' + req.get('host'));
+    handleMobilePost(req.body || {}, res);
 });
 
 // Fallback: some FSM versions POST to root
 app.post('/', (req, res) => {
-    mobileAppContext = req.body || {};
-    res.redirect(req.protocol + '://' + req.get('host'));
+    handleMobilePost(req.body || {}, res);
 });
 
 /**
- * GET /web-container-context
+ * GET /web-container-context?session=<key>
  *
- * Frontend calls this on load to retrieve the stored mobile context.
- * Returns 404 if the app was opened directly in a browser.
+ * Frontend calls this on load to retrieve its own stored context.
+ * Returns 404 if no session key is provided or the key is not found
+ * (e.g. app opened directly in a browser, or session expired).
  */
 app.get('/web-container-context', (req, res) => {
-    if (mobileAppContext === undefined) {
-        return res.status(404).json({ message: 'No mobile context available.' });
+    const key = req.query.session;
+
+    if (!key) {
+        return res.status(404).json({ message: 'No session key provided. Open from FSM Mobile.' });
     }
-    return res.json(mobileAppContext);
+
+    const context = sessions[key];
+    if (!context) {
+        return res.status(404).json({ message: `Session '${key}' not found or expired.` });
+    }
+
+    // Return context without the internal timestamp field
+    const { _timestamp, ...contextData } = context;
+    return res.json(contextData);
 });
 
 // ===========================

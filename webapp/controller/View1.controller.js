@@ -7,7 +7,6 @@ sap.ui.define([
     return Controller.extend("mobileappwebcontainer.controller.View1", {
 
         onInit() {
-            // Initialise the view model with all possible states
             this.getView().setModel(new JSONModel({
                 busy: true,
                 contextLoaded: false,
@@ -19,21 +18,26 @@ sap.ui.define([
         },
 
         /**
-         * Fetch the FSM Mobile session context stored by the backend.
+         * Fetch the FSM Mobile session context from the backend.
          *
-         * The backend captures it when FSM Mobile POSTs to
-         * /web-container-access-point and stores it in memory.
-         * The frontend retrieves it here via GET /web-container-context.
-         *
-         * Possible outcomes:
-         *  - 200 → context available, populate the view
-         *  - 404 → app opened directly in browser (no POST received yet)
-         *  - other error → treat as no-context
+         * The backend stores one context slot per user+object (session key)
+         * and passes the key as a URL query param on redirect.
+         * We read it from the current URL and send it back on the GET request
+         * so each user retrieves exactly their own context.
          */
         _loadContext() {
             const oModel = this.getView().getModel("view");
 
-            fetch("/web-container-context")
+            // Read session key injected by the server redirect:
+            // POST /web-container-access-point → redirect /?session=<key>
+            const params = new URLSearchParams(window.location.search);
+            const sessionKey = params.get("session");
+
+            const url = sessionKey
+                ? `/web-container-context?session=${encodeURIComponent(sessionKey)}`
+                : "/web-container-context";
+
+            fetch(url)
                 .then(response => {
                     if (!response.ok) {
                         throw new Error(`HTTP ${response.status}`);
@@ -48,7 +52,8 @@ sap.ui.define([
                     console.log("FSM context loaded:", {
                         user: context.userName,
                         company: context.companyName,
-                        objectType: context.objectType
+                        objectType: context.objectType,
+                        session: sessionKey
                     });
                 })
                 .catch(error => {
