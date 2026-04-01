@@ -3,6 +3,13 @@
   "authenticationMethod": "route",
   "routes": [
     {
+      "source": "^/appconfig\\.json$",
+      "target": "/appconfig.json",
+      "service": "html5-apps-repo-rt",
+      "authenticationType": "none",
+      "cacheControl": "no-cache"
+    },
+    {
       "source": "^/resources/(.*)$",
       "target": "/resources/$1",
       "authenticationType": "none",
@@ -18,7 +25,7 @@
       "source": "^(.*)$",
       "target": "$1",
       "service": "html5-apps-repo-rt",
-      "authenticationType": "xsuaa"
+      "authenticationType": "none"
     }
   ]
 }
